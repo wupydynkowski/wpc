@@ -1,0 +1,62 @@
+name: Auto: PHP 8.3 & WooCommerce 9.x compatibility fixes
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Setup PHP 8.3
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, xml, json, curl
+          coverage: none
+
+      - name: Ensure git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Install composer dependencies
+        run: |
+          if [ -f composer.json ]; then
+            composer install --no-interaction --prefer-dist
+          else
+            echo "composer.json not found — skipping composer install"
+          fi
+
+      - name: Run automated fixes
+        run: |
+          chmod +x apply-fixes.sh || true
+          ./apply-fixes.sh
+
+      - name: Check for changes and create PR
+        env:
+          REPO: ${{ github.repository }}
+          BRANCH: fix/php8.3-woocommerce-9-compat
+          PR_TITLE: "Compat: PHP 8.3 & WooCommerce 9.x"
+          BASE: main
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "Compat: PHP 8.3 & WooCommerce 9.x — auto fixes (Rector, CS Fix, dynamic props)" || echo "No commit created"
+            git push -u origin "$BRANCH" || git push origin HEAD:"$BRANCH"
+            # Create PR via API
+            BODY=$(printf "This PR applies automated compatibility fixes for PHP 8.3 and WooCommerce 9.x.\n\nPlease review changes, especially added property declarations and WC API usages.")
+            API_URL="https://api.github.com/repos/${REPO}/pulls"
+            PAYLOAD=$(jq -n --arg title "$PR_TITLE" --arg head "$BRANCH" --arg base "$BASE" --arg body "$BODY" '{title:$title, head:$head, base:$base, body:$body}')
+            curl -s -S -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json" "$API_URL" -d "$PAYLOAD" | jq .
+          else
+            echo "No changes detected — nothing to commit or PR."
+          fi
