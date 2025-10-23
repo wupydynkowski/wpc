@@ -1,0 +1,13 @@
+{
+  "require-dev": {
+    "rector/rector": "^0.19 || ^1.0",
+    "squizlabs/php_codesniffer": "^3.7",
+    "friendsofphp/php-cs-fixer": "^3.0",
+    "phpstan/phpstan": "^1.12"
+  },
+  "scripts": {
+    "rector": "vendor/bin/rector process --ansi",
+    "csfix": "vendor/bin/php-cs-fixer fix --config=.php-cs-fixer.dist.php",
+    "phpstan": "vendor/bin/phpstan analyse"
+  }
+}
