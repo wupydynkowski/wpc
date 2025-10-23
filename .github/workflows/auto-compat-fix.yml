@@ -10,6 +10,7 @@ permissions:
 jobs:
   auto-fix:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -21,27 +22,51 @@ jobs:
         with:
           php-version: '8.3'
           extensions: mbstring, xml, json, curl
-          coverage: none
 
       - name: Ensure git user
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Install composer dependencies
+      - name: Create temp composer and install tools
         run: |
-          if [ -f composer.json ]; then
-            composer install --no-interaction --prefer-dist
+          set -e
+          TMP_DIR="$(mktemp -d)"
+          pushd "$TMP_DIR"
+          composer init --no-interaction --name=compat/tools --require=rector/rector:^0.19 --require=friendsofphp/php-cs-fixer:^3.0 --require=phpstan/phpstan:^1.12 || true
+          composer install --no-interaction --prefer-dist || true
+          echo "TOOLS_DIR=$TMP_DIR" >> "$GITHUB_ENV"
+          popd
+
+      - name: Run Rector
+        run: |
+          if [ -n "${{ env.TOOLS_DIR }}" ] && [ -x "${{ env.TOOLS_DIR }}/vendor/bin/rector" ]; then
+            if [ -d "$GITHUB_WORKSPACE/src" ]; then
+              "${{ env.TOOLS_DIR }}/vendor/bin/rector" process "$GITHUB_WORKSPACE/src" --config="$GITHUB_WORKSPACE/rector.php" || true
+            else
+              "${{ env.TOOLS_DIR }}/vendor/bin/rector" process "$GITHUB_WORKSPACE" --config="$GITHUB_WORKSPACE/rector.php" || true
+            fi
           else
-            echo "composer.json not found — skipping composer install"
+            echo "Rector not available - skipping"
           fi
 
-      - name: Run automated fixes
+      - name: Run PHP-CS-Fixer
         run: |
-          chmod +x apply-fixes.sh || true
-          ./apply-fixes.sh
+          if [ -n "${{ env.TOOLS_DIR }}" ] && [ -x "${{ env.TOOLS_DIR }}/vendor/bin/php-cs-fixer" ] && [ -f "$GITHUB_WORKSPACE/.php-cs-fixer.dist.php" ]; then
+            "${{ env.TOOLS_DIR }}/vendor/bin/php-cs-fixer" fix --config="$GITHUB_WORKSPACE/.php-cs-fixer.dist.php" "$GITHUB_WORKSPACE" || true
+          else
+            echo "PHP-CS-Fixer not available or config missing - skipping"
+          fi
 
-      - name: Check for changes and create PR
+      - name: Run dynamic property fixer (if present)
+        run: |
+          if [ -f "$GITHUB_WORKSPACE/tools/dynamic_property_fixer.php" ]; then
+            php "$GITHUB_WORKSPACE/tools/dynamic_property_fixer.php" "$GITHUB_WORKSPACE"
+          else
+            echo "tools/dynamic_property_fixer.php not found - skipping"
+          fi
+
+      - name: Create branch & PR if changes
         env:
           REPO: ${{ github.repository }}
           BRANCH: fix/php8.3-woocommerce-9-compat
@@ -50,10 +75,9 @@ jobs:
         run: |
           if [ -n "$(git status --porcelain)" ]; then
             git add -A
-            git commit -m "Compat: PHP 8.3 & WooCommerce 9.x — auto fixes (Rector, CS Fix, dynamic props)" || echo "No commit created"
-            git push -u origin "$BRANCH" || git push origin HEAD:"$BRANCH"
-            # Create PR via API
-            BODY=$(printf "This PR applies automated compatibility fixes for PHP 8.3 and WooCommerce 9.x.\n\nPlease review changes, especially added property declarations and WC API usages.")
+            git commit -m "Compat: PHP 8.3 & WooCommerce 9.x — auto fixes (Rector, CS Fix, dynamic props)" || true
+            git push -u origin HEAD:"$BRANCH" || true
+            BODY="This PR applies automated compatibility fixes for PHP 8.3 and WooCommerce 9.x. Please review changes, especially added property declarations and WC API usages."
             API_URL="https://api.github.com/repos/${REPO}/pulls"
             PAYLOAD=$(jq -n --arg title "$PR_TITLE" --arg head "$BRANCH" --arg base "$BASE" --arg body "$BODY" '{title:$title, head:$head, base:$base, body:$body}')
             curl -s -S -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json" "$API_URL" -d "$PAYLOAD" | jq .
